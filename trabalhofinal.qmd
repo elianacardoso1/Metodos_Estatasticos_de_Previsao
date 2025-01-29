@@ -1,0 +1,439 @@
+---
+title: "Trabalho Final – Métodos Estatísticos de Previsão"
+author: "Eliana Cardoso Gonçalves "
+format: pdf
+date: "2025-01-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE
+)
+
+library(zoo)
+library(dplyr)
+library(forecast)
+library(kableExtra)
+library(lmtest)
+library(ggplot2)
+library(gridExtra)
+library(grid)  
+library(car)
+library(readr)
+```
+
+# DESCRIÇÃO DOS DADOS
+
+```{r cars, echo=FALSE, message=FALSE, warning=FALSE}
+setwd("C:/Users/eliana.cardoso/OneDrive - Fundação Dom Cabral/Documentos/GitHub/mep")
+
+dados_temperatura <- read_csv("daily-minimum-temperatures.csv")
+
+
+colnames(dados_temperatura) <- c("data", "temperatura")
+
+# Série Mensal - Temperatura Mínima Mensal Média
+temperatura_mensal <- dados_temperatura %>%
+  mutate(data = as.yearmon(data)) %>%
+  filter(data >= as.yearmon("1982-01")) %>%
+  group_by(data) %>%
+  summarize(temperatura = mean(temperatura))
+
+kable(head(temperatura_mensal)) %>%
+  kable_styling("striped", full_width = F)
+```
+
+A série temporal escolhida para esta análise é referente à temperatura mínima diária registrada na cidade de Melbourne, Austrália, entre janeiro de 1982 e dezembro de 1990. Os dados foram retirados do repositório Kaggle, especificamente do conjunto chamado Minimum Daily Temperatures in Melbourne, que pode ser acessado: https://www.kaggle.com/datasets/ingwangdk/minimum-daily-temperatures-in-melbourne-10-years/data?select=daily-minimum-temperatures.csv
+
+A série original contém dados diários sobre a temperatura mínima, mas, para facilitar a análise de tendências ao longo do tempo e identificar padrões sazonais mais evidentes, decidimos transformar os dados para uma frequência mensal. Para isso, calculamos a média mensal das temperaturas mínimas, o que resultou em uma série de 108 observações mensais.
+
+Essa transformação foi fundamental para que pudéssemos observar melhor as variações sazonais das temperaturas, como o comportamento típico das estações do ano. Com esses dados, é possível realizar análises mais profundas sobre tendências climáticas e até mesmo aplicar modelos estatísticos para prever futuras variações, utilizando técnicas como decomposição sazonal, suavização exponencial e outros métodos de previsão de séries temporais.
+
+Foram retiradas as últimas 12 observações para o conjunto teste.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#*- Retirando as 12 ultimas observações para conjunto teste*
+
+conjunto_treino <- temperatura_mensal[1:(nrow(temperatura_mensal) - 12), ]
+conjunto_teste <- temperatura_mensal[(nrow(temperatura_mensal) - 11):nrow(temperatura_mensal), ]
+
+#Grafico da serie utilizando conjunto de treino 
+ggplot(conjunto_treino, aes(x = data, y = temperatura)) +
+  geom_line(color = "blue") +
+  geom_point(color = "red") +
+  labs(title = "Temperatura Mínima Mensal Média (1982-1990)", 
+       x = "Data", 
+       y = "Temperatura Mínima (°C)") +
+  theme_minimal() 
+```
+
+Ao analisar o gráfico da série temporal das temperaturas mínimas mensais entre 1982 e 1990, é possível identificar algumas características importantes:
+
+*Sazonalidade:* A série apresenta um comportamento sazonal claro, com variações regulares a cada 12 meses. Isso é esperado devido à translação da Terra em torno do Sol, que gera mudanças de temperatura associadas às estações do ano.
+
+*Estacionariedade:* Aparentemente as propriedades estatísticas da série (como a média e a variância) permanecem constantes ao longo do tempo. Ou seja, a série não aparenta ter tendência na parte simples nem sazonal, o que indica uma possível estacionalidade.
+
+# AJUSTE DE MODELOS - ARIMA
+
+Para a identificação do melhor modelo, o primeiro passo foi analisar as características da série temporal em questão. Para isso, foram utilizados os gráficos ACF (Função de Autocorrelação) e PACF (Função de Autocorrelação Parcial), que são ferramentas essenciais para verificar as dependências temporais da série.
+
+O gráfico de ACF permite observar as correlações entre os valores da série em diferentes defasagens (lags). A partir dessa análise, foi possível identificar se a série apresenta uma estrutura de dependência autoregressiva (AR) ou de média móvel (MA), além de indicar a necessidade de modelagem sazonal.
+
+O gráfico de PACF, por sua vez, ajuda a identificar a ordem dos modelos autoregressivos, permitindo entender até que ponto os valores passados influenciam o valor presente da série. Com base nas observações dos gráficos ACF e PACF, foi possível fazer suposições iniciais sobre as ordens dos componentes AR e MA, tanto na parte sazonal quanto na parte não sazonal.
+
+Com as características da série identificadas, seguiu-se para a construção de modelos ARIMA com diferentes combinações de ordens para os componentes AR, MA e sazonal. Para cada modelo ajustado, foi calculado o AIC (Critério de Informação de Akaike), com o objetivo de selecionar o modelo mais adequado, considerando a qualidade do ajuste e a complexidade do modelo. O modelo com o menor valor de AIC foi selecionado como o mais apropriado para a série temporal.
+
+Em todos os testes estatísticos realizados neste estudo, foi adotado um nível de significância de 5% (alpha; = 0,05).
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#passo 1)ACF e PACF para identificar dependências temporais
+serie <- ts(conjunto_treino$temperatura, frequency = 12, start = c(1982, 1))
+
+acf(serie, lag.max = 5*12, main = "Função de Autocorrelação (ACF) da Série Temporal")
+pacf(serie, lag.max = 5*12, main = "Função de Autocorrelação Parcial (PACF) da Série Temporal")
+```
+
+Analisou-se as funções ACF e PACF para os 10 primeiros períodos, e algumas características importantes foram observadas. Tanto no gráfico da Função de Autocorrelação, quanto no gráfico da Função de Autocorrelação Parcial temos um decrescimento exponencial que pode ser visualizado nos primeiros picos. Esse comportamento é característico de um modelo ARMA(1,1), por isso será o modelo inicial usado, para posteriormente sobrefixá-lo.
+
+Analisando os picos na componente sazonal, observamos que, na ACF, ocorre um decaimento exponencial. Já na PACF, não é possível identificar um pico claro no lag 12, embora esteja próximo do limite. Com base nessa análise, o modelo mais adequado parece ser um AR(1), que oferece o melhor ajuste aos dados.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Função para exibir a tabela de coeficientes do modelo
+exibir_coeficientes <- function(modelo) {
+  # Resultados do teste de coeficientes
+  coef_test <- coeftest(modelo)
+  
+  # Criando a tabela dos coeficientes
+  coef_table <- data.frame(
+    Estimativa = coef_test[, 1],
+    Erro_Est = coef_test[, 2],
+    Valor_z = coef_test[, 3],
+    p_valor = coef_test[, 4]
+  )
+  
+  # Exibindo a tabela com título
+  library(knitr)
+  kable(coef_table, 
+        col.names = c( "Estimativa", "Erro Padrão", "Valor z", "p-valor"), 
+        format = "markdown", 
+        caption = "Resultado do Teste de Coeficientes do Modelo")
+}
+
+# Exemplo de uso da função (substitua mod7 pelo seu modelo)
+# Função para exibir o AIC de um modelo
+exibir_aic <- function(modelo) {
+  # Calcular o valor do AIC para o modelo
+  aic_value <- AIC(modelo)
+  
+  # Criar a tabela com o valor do AIC
+  aic_table <- data.frame(
+    Modelo = deparse(substitute(modelo)),  # Captura o nome do modelo
+    AIC = aic_value
+  )
+  
+  # Exibir a tabela com título
+  library(knitr)
+  kable(aic_table, 
+        col.names = c("Modelo", "AIC"), 
+        format = "markdown", 
+        caption = paste("Valor do AIC para o Modelo", deparse(substitute(modelo))))
+}
+
+
+
+
+```
+
+### Modelo 1
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+mod1 <- arima(serie, order = c(1, 0, 1), seasonal = list(order = c(1, 0, 0)))
+
+
+exibir_coeficientes(mod1)
+exibir_aic(mod1)
+```
+
+O Modelo com nossa hipótese inical, o parâmetro da media móvel não foi significativo com isso tiramos esse coeficiente.
+
+
+
+## Sobrefixação da parte simples
+### Modelo 2
+
+```{r echo=FALSE}
+mod2 <- arima(serie, order = c(1, 0, 0), seasonal = list(order = c(1, 0, 0)))
+exibir_coeficientes(mod2)
+exibir_aic(mod2)
+```
+
+Assim concluirmos que o modelo 2, sem ma1 ficou melhor ajustado, uma vez que possui um bom AIC (341.5836) e todos componentes significativos.
+
+Ao analisar $\theta$ e $\phi$, comprovamos a inversibilidade e estacionariedade, uma vez que ambos são menores do que 1.
+
+## Sobrefixação da sazonalidade
+
+Modelo 3
+
+```{r}
+mod3 <- arima(serie, order = c(1, 0, 0), seasonal = list(order = c(2, 0, 0)))
+
+exibir_coeficientes(mod3)
+
+exibir_aic(mod3)
+```
+
+Adicionando um novo parametro na parte sazonal referente a parte autorregressiva. Obtivemos um todos os coeficientes significativos. E um AIC menor em relação ao encontrado no modelo 2. Ao analisar $\theta$ e $\phi$, comprovamos a inversibilidade e estacionariedade, uma vez que ambos são menores do que 1.
+
+### Modelo 4
+
+```{r}
+mod4 <- arima(serie, order = c(1, 0, 0), seasonal = list(order = c(1, 0, 1)))
+
+exibir_coeficientes(mod4)
+
+exibir_aic(mod4)
+```
+
+Se o modelo 4 apresenta um 𝜙 muito próximo de 1, podemos rejeitá-lo como estacionário, mesmo com um AIC menor. O modelo 3, embora tenha um AIC um pouco maior, é estacionário e mais confiável do ponto de vista teórico e estatístico.
+
+## Análise residuos:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+conjunto_treino_residuos <- conjunto_treino %>%
+  mutate(
+    Resíduos_M3 = mod3$residuals
+  )
+
+## Plot dos resíduos do Modelo 9
+plot_residuos_M3 <- conjunto_treino_residuos %>%
+  ggplot() +
+  geom_line(aes(x = data, y = Resíduos_M3, color = "M3")) +
+  labs(x = 'Tempo', y = 'Resíduos', color = 'Modelo') +
+  ggtitle('Resíduos - Modelo M3') +
+  theme_minimal()
+
+grid.arrange(plot_residuos_M3)
+```
+
+O pressuposto da variância constante ao longo do tempo foi atendido, garantindo que os resíduos do modelo não apresentam padrões sistemáticos ou mudanças na dispersão.
+
+```{r}
+# Analise normalidade dos residuos:
+# Resultados do teste de normalidade Shapiro-Wilk
+shapiro_test <- shapiro.test(mod3$residuals)
+
+# Exibir os resultados em uma tabela usando kable com título
+resultados <- data.frame(
+  Estatística = shapiro_test$statistic,
+  `Valor p` = shapiro_test$p.value
+)
+
+
+# Exibindo a tabela com título
+kable(resultados, 
+      col.names = c("Estatística de Teste", "Valor p"), 
+      format = "markdown", 
+      caption = "Resultado do Teste de Normalidade de Shapiro-Wilk para os Resíduos do Modelo")
+
+```
+
+No teste de Shapiro-Wilk, nossa hipótese nula é a de os dados seguem a distribuição normal. O p-valor do teste foi igual a 0.5307165. Utilizando o nível de significância de 5%, não rejeitaremos a hipótese nula. Logo, o pressuposto de normalidade também foi atendido.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+# ACF e PACF para o modelo M7
+acf_plot_M7 <- ggAcf(mod3$residuals, lag.max =5*12) +
+  ggtitle("ACF - Modelo M3") +
+  theme_minimal()
+
+pacf_plot_M7 <- ggPacf(mod3$residuals, lag.max = 5*12) +
+  ggtitle("PACF - Modelo M3") +
+  theme_minimal()
+
+# Teste de Box-Pierce
+box_test_M7_1 <- Box.test(mod3$residuals, lag = 1, type = "Ljung-Box", fitdf = 0)
+box_test_M7_2 <- Box.test(mod3$residuals, lag = 2, type = "Ljung-Box", fitdf = 0)
+box_test_M7_11 <- Box.test(mod3$residuals, lag = 11, type = "Ljung-Box", fitdf = 0)
+box_test_M7_12 <- Box.test(mod3$residuals, lag = 12, type = "Ljung-Box", fitdf = 0)
+box_test_M7_24 <- Box.test(mod3$residuals, lag = 24, type = "Ljung-Box", fitdf = 0)
+
+p_value_box_test_M7_1 <- box_test_M7_1$p.value
+p_value_box_test_M7_2 <- box_test_M7_2$p.value
+p_value_box_test_M7_11 <- box_test_M7_11$p.value
+p_value_box_test_M7_12 <- box_test_M7_12$p.value
+p_value_box_test_M7_24 <- box_test_M7_24$p.value
+
+tabela_pvalores <- data.frame(
+  Lag = c("1", "2", "11", "12", "24"),
+  P_valor = c(p_value_box_test_M7_1, p_value_box_test_M7_2, p_value_box_test_M7_11, p_value_box_test_M7_12, p_value_box_test_M7_24)) %>% 
+  kable(col.names = c("Lag", "P-valor"), caption = "P-valores do Teste de Box-Pierce para os Lags determinados") %>%
+  kable_styling("striped", full_width = F)
+
+# Plot ACF e PACF lado a lado com p-valor do Box-Test
+grid.arrange(
+  acf_plot_M7, pacf_plot_M7,
+  ncol = 2
+)
+```
+
+
+
+Em relação aos gráficos dos resíduos, a função de autocorrelação (ACF) apresenta cinco picos significativos, indicando possíveis autocorrelações nos primeiros lags. Por outro lado, a função de autocorrelação parcial (PACF) revelou um pico significativo, indicando que o valor atual está fortemente relacionado ao valor imediatamente anterior.
+
+A análise da autocorrelação dos resíduos é essencial para verificar se o modelo ajustado ARIMA capturou adequadamente as dependências temporais da série. Se houver autocorrelação significativa nos resíduos, isso indica que o modelo não está ajustado corretamente.No teste de Box-Ljung, a hipótese nula é de que não existe autocorrelação significativa nos resíduos, ou seja, os resíduos são independentes. O p-valor obtido no teste para o primeiro lag foi de 0.1551, o que indica que, para este lag específico, não podemos rejeitar a hipótese nula, sugerindo ausência de autocorrelação significativa. Isso indica que o modelo ARIMA ajustado (mod3) não conseguiu explicar completamente as dependências temporais presentes na série
+
+No entanto, para os lags 2, 11, 12 e 24, os p-valores foram menores que 0,05 (0.009315, 0.001525, 0.0004527 e 4.154e-06, respectivamente), indicando que nesses lags há evidências de autocorrelação significativa nos resíduos, e a hipótese nula de independência deve ser rejeitada.
+
+Portanto, os resíduos apresentam correlação significativa em determinados lags, sugerindo que o modelo ajustado pode não ter capturado completamente todas as dependências temporais nos dados. Nesse caso, outro modelo, que não faz parte do grupo dos ARIMAs estudados na disciplina, poderia ser ajustado aos dados. Não tendo as ferramentas para tal, consideraremos o modelo 7 aquele com melhor ajuste entre os analisados."
+
+# AJUSTE DE MODELOS - Alisamento Exponencial
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Decompondo a série temporal (aditiva)
+decomposicao_aditiva <- decompose(serie, type = "additive")
+plot(decomposicao_aditiva)
+
+# Decompondo a série temporal (multiplicativa)
+decomposicao_multiplicativa <- decompose(serie, type = "multiplicative")
+plot(decomposicao_multiplicativa)
+```
+
+Os plots acima decompõe a série temporal em três componentes principais: tendência, sazonalidade e resíduo:
+
+*Tendência:* A série parece mostrar um aumento nas temperaturas mínimas a partir de 1987, sugerindo uma tendência de aquecimento nas últimas décadas do período analisado. No entanto, é importante realizar testes estatísticos.
+
+*Sazonalidade:* A sazonalidade é claramente visível, com picos e vales que se repetem a cada 12 meses. Isso reflete as variações típicas de temperatura associadas às estações do ano, com temperaturas mais altas no verão e mais baixas no inverno.
+
+*Resíduo:* O resíduo apresenta um padrão aleatório, com valores positivos e negativos distribuídos de forma equilibrada. Isso sugere que o modelo de decomposição conseguiu capturar a maior parte da variabilidade da série, deixando apenas flutuações aleatórias, ou seja, o modelo foi bem-sucedido em explicar os principais componentes da série.
+
+Para determinar qual modelo de decomposição (aditivo ou multiplicativo) é mais adequado, é necessário realizar alguns testes e análises adicionais:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Holt-Winters Aditivo
+aehw.aditivo <- HoltWinters(serie, alpha = NULL, beta = NULL, gamma = NULL, seasonal = c("additive"))
+
+# Extraindo o erro quadrático médio (RMSE), AIC e SSE
+RMSE <- sqrt(aehw.aditivo$SSE / length(serie))
+SSE <- aehw.aditivo$SSE
+
+# Extraindo os parâmetros do modelo aditivo
+parametros_aditivo <- data.frame(
+  "Parâmetro" = c("Alpha", "Beta", "Gamma", "RMSE", "SSE"),
+  "Valor" = c(aehw.aditivo$alpha, aehw.aditivo$beta, aehw.aditivo$gamma, 
+              RMSE, SSE)
+)
+
+# Exibindo os parâmetros do modelo aditivo em formato de tabela
+kable(parametros_aditivo, caption = "Parâmetros e Métricas do Modelo Aditivo de Holt-Winters") %>% 
+  kable_styling(full_width = F, position = "center")
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Holt-Winters Multiplicativo
+aehw.multiplicativo <- HoltWinters(serie, alpha = NULL, beta = NULL, gamma = NULL, seasonal = c("multiplicative"))
+
+# Extraindo o erro quadrático médio (RMSE), AIC e SSE
+RMSE_multiplicativo <- sqrt(aehw.multiplicativo$SSE / length(serie))
+SSE_multiplicativo <- aehw.multiplicativo$SSE
+
+# Extraindo os parâmetros do modelo multiplicativo
+parametros_multiplicativo <- data.frame(
+  "Parâmetro" = c("Alpha", "Beta", "Gamma", "RMSE", "SSE"),
+  "Valor" = c(aehw.multiplicativo$alpha, aehw.multiplicativo$beta, aehw.multiplicativo$gamma, 
+              RMSE_multiplicativo, SSE_multiplicativo)
+)
+
+# Exibindo os parâmetros do modelo multiplicativo em formato de tabela
+kable(parametros_multiplicativo, caption = "Parâmetros e Métricas do Modelo Multiplicativo de Holt-Winters") %>% 
+  kable_styling(full_width = F, position = "center")
+```
+
+-   RMSE (Root Mean Squared Error): Mede a precisão do modelo. Quanto menor, melhor o modelo ajusta-se aos dados.
+-   SSE (Soma dos Erros ao Quadrado): Mede a soma dos quadrados dos resíduos (erros), sendo uma indicação do quão bem o modelo está ajustado.
+
+O modelo aditivo apresenta um alpha de 0.2278, o que indica uma suavização moderada da série temporal, ou seja, o modelo atribui um peso razoável aos valores mais recentes sem exagerar. O beta de 0.0169 sugere uma tendência de crescimento ou decrescimento muito suave, enquanto o gamma de 0.5370 aponta para uma sazonalidade com um impacto considerável na modelagem. A RMSE de 0.9957 e o SSE de 95.1901 são relativamente baixos, sugerindo que o modelo aditivo consegue capturar bem a variabilidade dos dados e ajustar-se de forma eficaz à série.
+
+Por outro lado, o modelo multiplicativo apresenta um alpha um pouco maior (0.2870), o que indica que ele atribui um peso ligeiramente maior aos dados mais recentes, ajustando-se mais rapidamente a mudanças nas observações. O beta de 0.0074 é bem baixo, o que significa que a tendência do modelo é muito suave, com uma variação muito pequena. O gamma de 0.6553, por sua vez, sugere uma sazonalidade mais forte, ou seja, o modelo multiplicativo ajusta-se a variações sazonais mais acentuadas. No entanto, a RMSE de 1.0741 e o SSE de 110.7444 são maiores, indicando que o modelo multiplicativo tem um desempenho inferior, com maior erro de ajuste e menor precisão.
+
+Dado que o modelo aditivo apresenta valores de RMSE e SSE menores, indicando um ajuste mais preciso e menos erro, ele será o modelo escolhido para esta série temporal.
+
+## Previsões usando AEHW aditivo
+
+```{r}
+previsao_alisamento <- predict(aehw.aditivo, n.ahead = 11, prediction.interval = T,
+level = 0.95, interval = "prediction")
+a <- ts(conjunto_teste$temperatura, frequency = 12, start = 1990)
+plot(aehw.aditivo, previsao_alisamento , lwd =2, col = "black", xlab = "Ano", ylim = c(0,20)); lines(a, col = "black", lwd = 1)
+```
+
+## Previsão do modelo ARIMA
+
+```{r}
+n=length(serie)
+H=12
+
+require(forecast)
+previsao_arima=forecast(serie, 12, level=c(95))
+
+```
+
+```{r}
+# Grafico da serie com previsoes e intervalos de previsao
+Dados=c(serie,rep(NA,12))
+CEPPrev=ts(Dados,start=1982,frequency=12)
+previsao <- ts(rep(NA,n+12),start=1982,frequency=12)
+LI <- ts(rep(NA,n+12),start=1982,frequency=12)
+LS <- ts(rep(NA,n+12),start=1982,frequency=12)
+for(i in 1:H){
+previsao[n+12-H+i] <- previsao_arima$mean[i]
+LI[n+12-H+i] <-previsao_arima$lower[i]
+LS[n+12-H+i] <- previsao_arima$upper[i]
+}
+plot(CEPPrev,type='l',xlab='Ano',ylab='CEP',ylim=c(0,40))
+lines(previsao, col='blue')
+lines(LI, col='red')
+lines(LS, col='red')
+
+```
+
+# COMPARAÇÃO DOS MODELOS
+
+```{r}
+# Valores reais do conjunto de teste
+valores_reais <- conjunto_teste$temperatura
+
+ previsao_alisamento= data.frame( previsao_alisamento)
+
+# Erros para ARIMA
+mae_arima <- mean(abs(valores_reais - previsao_arima$mean))
+rmse_arima <- sqrt(mean((valores_reais - previsao_arima$mean)^2))
+mape_arima <- mean(abs((valores_reais - previsao_arima$mean) / valores_reais)) * 100
+
+# Erros para Alisamento Exponencial
+mae_alisamento <- mean(abs(valores_reais - previsao_alisamento$fit ))
+rmse_alisamento <- sqrt(mean((valores_reais - previsao_alisamento$fit )^2))
+mape_alisamento <- mean(abs((valores_reais -  previsao_alisamento$fit) / valores_reais)) * 100
+
+```
+
+```{r}
+# Organizando os resultados em uma tabela
+resultados <- data.frame(
+  Modelo = c("ARIMA", "Alisamento Exponencial"),
+  MAE = c(mae_arima, mae_alisamento),
+  RMSE = c(rmse_arima, rmse_alisamento),
+  MAPE = c(mape_arima, mape_alisamento)
+)
+
+# Exibindo os resultados
+kable(resultados)
+
+```
+
+Com base nos resultados das métricas de erro, o modelo de Alisamento Exponencial apresentou um desempenho superior ao ARIMA. Ele obteve valores menores de MAE (0.6323 contra 0.6662), RMSE (0.7858 contra 0.8713) e MAPE (5.8277 contra 6.0883). Essas diferenças indicam que o Alisamento Exponencial foi mais eficaz em reduzir os erros absolutos e percentuais, além de lidar melhor com variações maiores nos dados.
+
+Portanto, para o conjunto de dados testado, o Alisamento Exponencial se mostra uma escolha mais adequada, oferecendo previsões mais precisas. Ele é particularmente vantajoso para cenários em que erros percentuais e grandes desvios devem ser minimizados, garantindo maior confiabilidade nas estimativas realizadas.
